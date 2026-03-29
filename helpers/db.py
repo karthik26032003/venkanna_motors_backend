@@ -84,6 +84,18 @@ async def create_tables() -> None:
         await conn.execute(
             "ALTER TABLE venkanna_calls ADD COLUMN IF NOT EXISTS vehicle TEXT NOT NULL DEFAULT ''"
         )
+        await conn.execute(
+            "ALTER TABLE venkanna_calls ADD COLUMN IF NOT EXISTS transcript TEXT NOT NULL DEFAULT ''"
+        )
+        await conn.execute(
+            "ALTER TABLE venkanna_calls ADD COLUMN IF NOT EXISTS sentiment TEXT NOT NULL DEFAULT ''"
+        )
+        await conn.execute(
+            "ALTER TABLE venkanna_calls ADD COLUMN IF NOT EXISTS takeaway TEXT NOT NULL DEFAULT ''"
+        )
+        await conn.execute(
+            "ALTER TABLE venkanna_calls ADD COLUMN IF NOT EXISTS callback BOOLEAN NOT NULL DEFAULT FALSE"
+        )
     logger.info("DB tables ready")
 
 
@@ -306,21 +318,57 @@ async def get_batch_calls(batch_id: str) -> list[dict]:
 
 async def get_contact_info_by_call_ids(call_ids: list[str]) -> dict[str, dict]:
     """
-    Returns {call_id: {customer_name, vehicle}} for the given call_ids.
-    Only returns rows that exist in our DB (batch calls).
+    Returns enrichment data for each call_id found in our DB (batch calls only).
+    Keys: customer_name, phone_number, vehicle, sentiment, takeaway, callback
     """
     pool = get_pool()
     if not pool or not call_ids:
         return {}
     rows = await pool.fetch(
         """
-        SELECT call_id, customer_name, vehicle
+        SELECT call_id, phone_number, customer_name, vehicle,
+               sentiment, takeaway, callback
         FROM   venkanna_calls
         WHERE  call_id = ANY($1::text[])
         """,
         call_ids,
     )
-    return {r["call_id"]: {"customer_name": r["customer_name"], "vehicle": r["vehicle"]} for r in rows}
+    return {
+        r["call_id"]: {
+            "phone_number":  r["phone_number"],
+            "customer_name": r["customer_name"],
+            "vehicle":       r["vehicle"],
+            "sentiment":     r["sentiment"],
+            "takeaway":      r["takeaway"],
+            "callback":      r["callback"],
+        }
+        for r in rows
+    }
+
+
+async def save_call_analysis(
+    call_id:   str,
+    transcript: str,
+    sentiment:  str,
+    takeaway:   str,
+    callback:   bool,
+) -> None:
+    """Persist GPT analysis + formatted transcript for a completed call."""
+    pool = get_pool()
+    if not pool:
+        return
+    await pool.execute(
+        """
+        UPDATE venkanna_calls
+        SET    transcript = $1,
+               sentiment  = $2,
+               takeaway   = $3,
+               callback   = $4,
+               updated_at = NOW()
+        WHERE  call_id = $5
+        """,
+        transcript, sentiment, takeaway, callback, call_id,
+    )
 
 
 async def delete_batch(batch_id: str) -> bool:

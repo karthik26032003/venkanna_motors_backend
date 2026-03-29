@@ -11,8 +11,13 @@ class CallSummary(BaseModel):
     endReason: Optional[str] = None
     shortSummary: Optional[str] = None
     medium: Optional[str] = None          # "plivo" | "webRtc" | etc.
-    customer_name: str = ""               # from venkanna_calls DB (batch calls only)
-    vehicle: str = ""                     # from venkanna_calls DB (batch calls only)
+    # ── Enriched from venkanna_calls DB (batch calls only) ──
+    phone_number:  str = ""
+    customer_name: str = ""
+    vehicle:       str = ""
+    sentiment:     str = ""               # "positive" | "negative" | "neutral"
+    takeaway:      str = ""               # 5-6 word summary from GPT
+    callback:      bool = False           # should a human follow up?
 
 
 class CallsListResponse(BaseModel):

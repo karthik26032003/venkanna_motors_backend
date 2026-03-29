@@ -98,14 +98,18 @@ def _parse_iso(ts: str | None) -> datetime | None:
 
 
 async def _enrich_with_contact_info(summaries: list[CallSummary]) -> None:
-    """Mutates each CallSummary in-place with customer_name + vehicle from our DB."""
-    call_ids = [s.callId for s in summaries]
+    """Mutates each CallSummary in-place with DB-stored fields (batch calls only)."""
+    call_ids    = [s.callId for s in summaries]
     contact_map = await db.get_contact_info_by_call_ids(call_ids)
     for s in summaries:
         info = contact_map.get(s.callId)
         if info:
+            s.phone_number  = info["phone_number"]
             s.customer_name = info["customer_name"]
             s.vehicle       = info["vehicle"]
+            s.sentiment     = info["sentiment"]
+            s.takeaway      = info["takeaway"]
+            s.callback      = info["callback"]
 
 
 @router.get("/calls", response_model=CallsListResponse)

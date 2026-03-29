@@ -13,6 +13,7 @@ Events handled:
 Security: every request is verified with HMAC-SHA256 before processing.
 """
 
+import asyncio
 import datetime
 import hmac
 import logging
@@ -21,7 +22,8 @@ import os
 from fastapi import APIRouter, HTTPException, Request, Response
 
 import helpers.db as db
-from helpers.ultravox import create_outbound_call
+from helpers.ultravox import create_outbound_call, get_call_messages
+from helpers.openai_helper import analyze_transcript
 
 logger = logging.getLogger("webhook")
 
@@ -93,6 +95,52 @@ def _fmt_duration(joined: str | None, ended: str | None) -> str:
         return f"{m}m {s}s" if m else f"{s}s"
     except Exception:
         return "unknown"
+
+
+# ── Background analysis ───────────────────────────────────────────────────────
+
+_VISIBLE_ROLES = {"MESSAGE_ROLE_USER", "MESSAGE_ROLE_AGENT"}
+_ROLE_LABEL    = {"MESSAGE_ROLE_USER": "Customer", "MESSAGE_ROLE_AGENT": "Agent"}
+
+
+async def _analyze_and_save(call_id: str) -> None:
+    """
+    Fetches the full transcript from Ultravox, runs GPT-4o-mini analysis,
+    and stores the results in the DB. Runs as a background task so the
+    204 response is returned to Ultravox immediately.
+    """
+    try:
+        data     = await get_call_messages(call_id)
+        messages = data.get("results", [])
+
+        lines = []
+        for msg in messages:
+            role = msg.get("role", "")
+            if role not in _VISIBLE_ROLES:
+                continue
+            text = (msg.get("text") or "").strip()
+            if text:
+                lines.append(f"{_ROLE_LABEL[role]}: {text}")
+
+        transcript_text = "\n".join(lines)
+        if not transcript_text:
+            logger.info(f"No transcript for callId={call_id} — skipping analysis")
+            return
+
+        analysis = await analyze_transcript(transcript_text)
+        await db.save_call_analysis(
+            call_id,
+            transcript_text,
+            analysis["sentiment"],
+            analysis["takeaway"],
+            analysis["callback"],
+        )
+        logger.info(
+            f"Analysis saved callId={call_id} | "
+            f"sentiment={analysis['sentiment']} | callback={analysis['callback']}"
+        )
+    except Exception as e:
+        logger.error(f"_analyze_and_save failed for callId={call_id}: {e}")
 
 
 # ── Webhook endpoint ──────────────────────────────────────────────────────────
@@ -169,6 +217,9 @@ async def ultravox_webhook(request: Request) -> Response:
         )
 
         if batch_id:
+            # Fire transcript analysis in background — don't block the 204 response
+            asyncio.create_task(_analyze_and_save(call_id))
+
             # A call is "succeeded" if it was answered (joined timestamp present)
             succeeded = bool(call.get("joined"))
             error_msg = end_reason if not succeeded else None

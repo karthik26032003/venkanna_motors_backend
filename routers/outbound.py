@@ -113,21 +113,25 @@ async def initiate_batch_outbound_calls(body: OutboundBatchRequest):
             detail="Database not available. Batch calls require DATABASE_URL.",
         )
 
-    phone_numbers = body.phone_numbers  # already normalized by Pydantic validator
+    contacts = body.contacts  # already validated/normalized by Pydantic
     batch_id = str(uuid4())
-    total = len(phone_numbers)
+    total = len(contacts)
 
-    logger.info(f"Batch {batch_id}: {total} numbers | agent: {agent_id}")
+    logger.info(f"Batch {batch_id}: {total} contacts | agent: {agent_id}")
 
     await db.create_batch(batch_id, agent_id, from_number, total, name=body.name)
-    await db.insert_batch_calls(batch_id, phone_numbers)
+    await db.insert_batch_calls(
+        batch_id,
+        [{"phone_number": c.phone_number, "name": c.name, "vehicle": c.vehicle} for c in contacts],
+    )
 
     # Fire the first CONCURRENCY calls immediately
     started = 0
     for _ in range(min(db.get_concurrency(), total)):
-        number = await db.pop_next_queued(batch_id)
-        if not number:
+        contact = await db.pop_next_queued(batch_id)
+        if not contact:
             break
+        number = contact["phone_number"]
         try:
             call = await create_outbound_call(
                 agent_id=agent_id,
@@ -189,6 +193,8 @@ async def get_batch_calls(batch_id: str):
         BatchCallItem(
             id=r["id"],
             phone_number=r["phone_number"],
+            customer_name=r.get("customer_name") or "",
+            vehicle=r.get("vehicle") or "",
             call_id=r.get("call_id"),
             status=r["status"],
             error=r.get("error"),

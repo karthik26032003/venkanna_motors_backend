@@ -11,6 +11,8 @@ class CallSummary(BaseModel):
     endReason: Optional[str] = None
     shortSummary: Optional[str] = None
     medium: Optional[str] = None          # "plivo" | "webRtc" | etc.
+    customer_name: str = ""               # from venkanna_calls DB (batch calls only)
+    vehicle: str = ""                     # from venkanna_calls DB (batch calls only)
 
 
 class CallsListResponse(BaseModel):

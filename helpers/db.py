@@ -51,14 +51,16 @@ CREATE TABLE IF NOT EXISTS batches (
 
 CREATE_VENKANNA_CALLS = """
 CREATE TABLE IF NOT EXISTS venkanna_calls (
-    id           BIGSERIAL   PRIMARY KEY,
-    batch_id     TEXT        NOT NULL REFERENCES batches(batch_id),
-    phone_number TEXT        NOT NULL,
-    call_id      TEXT,
-    status       TEXT        NOT NULL DEFAULT 'queued',
-    error        TEXT,
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id            BIGSERIAL   PRIMARY KEY,
+    batch_id      TEXT        NOT NULL REFERENCES batches(batch_id),
+    phone_number  TEXT        NOT NULL,
+    customer_name TEXT        NOT NULL DEFAULT '',
+    vehicle       TEXT        NOT NULL DEFAULT '',
+    call_id       TEXT,
+    status        TEXT        NOT NULL DEFAULT 'queued',
+    error         TEXT,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_venkanna_calls_batch_id ON venkanna_calls(batch_id);
 CREATE INDEX IF NOT EXISTS idx_venkanna_calls_call_id  ON venkanna_calls(call_id);
@@ -75,6 +77,12 @@ async def create_tables() -> None:
         await conn.execute(CREATE_VENKANNA_CALLS)
         await conn.execute(
             "ALTER TABLE batches ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT ''"
+        )
+        await conn.execute(
+            "ALTER TABLE venkanna_calls ADD COLUMN IF NOT EXISTS customer_name TEXT NOT NULL DEFAULT ''"
+        )
+        await conn.execute(
+            "ALTER TABLE venkanna_calls ADD COLUMN IF NOT EXISTS vehicle TEXT NOT NULL DEFAULT ''"
         )
     logger.info("DB tables ready")
 
@@ -98,18 +106,31 @@ async def create_batch(
     )
 
 
-async def insert_batch_calls(batch_id: str, phone_numbers: list[str]) -> None:
+async def insert_batch_calls(
+    batch_id: str,
+    contacts: list[dict],  # each dict: {phone_number, name, vehicle}
+) -> None:
     pool = get_pool()
     if not pool:
         return
-    rows = [(batch_id, num) for num in phone_numbers]
+    rows = [
+        (batch_id, c["phone_number"], c.get("name", ""), c.get("vehicle", ""))
+        for c in contacts
+    ]
     await pool.executemany(
-        "INSERT INTO venkanna_calls (batch_id, phone_number) VALUES ($1, $2)",
+        """
+        INSERT INTO venkanna_calls (batch_id, phone_number, customer_name, vehicle)
+        VALUES ($1, $2, $3, $4)
+        """,
         rows,
     )
 
 
-async def pop_next_queued(batch_id: str) -> str | None:
+async def pop_next_queued(batch_id: str) -> dict | None:
+    """
+    Returns {phone_number, customer_name, vehicle} for the next queued call,
+    or None if the queue is empty.
+    """
     pool = get_pool()
     if not pool:
         return None
@@ -126,7 +147,7 @@ async def pop_next_queued(batch_id: str) -> str | None:
                 LIMIT  1
                 FOR UPDATE SKIP LOCKED
             )
-            RETURNING id, phone_number
+            RETURNING id, phone_number, customer_name, vehicle
             """,
             batch_id,
         )
@@ -141,7 +162,11 @@ async def pop_next_queued(batch_id: str) -> str | None:
                 """,
                 batch_id,
             )
-            return row["phone_number"]
+            return {
+                "phone_number":  row["phone_number"],
+                "customer_name": row["customer_name"],
+                "vehicle":       row["vehicle"],
+            }
         return None
 
 
@@ -269,7 +294,7 @@ async def get_batch_calls(batch_id: str) -> list[dict]:
         return []
     rows = await pool.fetch(
         """
-        SELECT id, phone_number, call_id, status, error, created_at
+        SELECT id, phone_number, customer_name, vehicle, call_id, status, error, created_at
         FROM   venkanna_calls
         WHERE  batch_id = $1
         ORDER  BY id ASC
@@ -277,6 +302,25 @@ async def get_batch_calls(batch_id: str) -> list[dict]:
         batch_id,
     )
     return [dict(r) for r in rows]
+
+
+async def get_contact_info_by_call_ids(call_ids: list[str]) -> dict[str, dict]:
+    """
+    Returns {call_id: {customer_name, vehicle}} for the given call_ids.
+    Only returns rows that exist in our DB (batch calls).
+    """
+    pool = get_pool()
+    if not pool or not call_ids:
+        return {}
+    rows = await pool.fetch(
+        """
+        SELECT call_id, customer_name, vehicle
+        FROM   venkanna_calls
+        WHERE  call_id = ANY($1::text[])
+        """,
+        call_ids,
+    )
+    return {r["call_id"]: {"customer_name": r["customer_name"], "vehicle": r["vehicle"]} for r in rows}
 
 
 async def delete_batch(batch_id: str) -> bool:

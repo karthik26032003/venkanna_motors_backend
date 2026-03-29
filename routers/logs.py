@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from helpers.ultravox import get_agent_calls, get_call_messages, get_call_recording
+import helpers.db as db
 from models.logs import CallsListResponse, CallSummary, CallMessagesResponse, MessageItem
 
 logger = logging.getLogger(__name__)
@@ -96,6 +97,17 @@ def _parse_iso(ts: str | None) -> datetime | None:
     return None
 
 
+async def _enrich_with_contact_info(summaries: list[CallSummary]) -> None:
+    """Mutates each CallSummary in-place with customer_name + vehicle from our DB."""
+    call_ids = [s.callId for s in summaries]
+    contact_map = await db.get_contact_info_by_call_ids(call_ids)
+    for s in summaries:
+        info = contact_map.get(s.callId)
+        if info:
+            s.customer_name = info["customer_name"]
+            s.vehicle       = info["vehicle"]
+
+
 @router.get("/calls", response_model=CallsListResponse)
 async def list_calls(
     page_size:  int          = Query(20, ge=1, le=100),
@@ -177,6 +189,7 @@ async def list_calls(
                 break
             page_cursor = _cursor_from_url(data.get("next"))
 
+        await _enrich_with_contact_info(results)
         return CallsListResponse(
             total    = len(results),
             next     = None,
@@ -192,6 +205,7 @@ async def list_calls(
         raise HTTPException(status_code=502, detail=f"Ultravox API error: {str(e)}")
 
     results = [_to_summary(call) for call in data.get("results", [])]
+    await _enrich_with_contact_info(results)
 
     return CallsListResponse(
         total    = data.get("total", len(results)),

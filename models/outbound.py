@@ -45,16 +45,27 @@ class OutboundCallResponse(BaseModel):
     message: str
 
 
-class OutboundBatchRequest(BaseModel):
-    phone_numbers: list[str]
+class BatchContact(BaseModel):
+    phone_number: str
     name: str = ""
+    vehicle: str = ""
 
-    @field_validator("phone_numbers")
+    @field_validator("phone_number")
     @classmethod
-    def validate_phones(cls, v: list[str]) -> list[str]:
+    def validate_phone(cls, v: str) -> str:
+        return _validate_e164(v)
+
+
+class OutboundBatchRequest(BaseModel):
+    contacts: list[BatchContact]
+    name: str = ""  # batch label (e.g. "April Service Follow-up")
+
+    @field_validator("contacts")
+    @classmethod
+    def validate_contacts(cls, v: list[BatchContact]) -> list[BatchContact]:
         if not v:
-            raise ValueError("phone_numbers list cannot be empty")
-        return [_validate_e164(num) for num in v]
+            raise ValueError("contacts list cannot be empty")
+        return v
 
 
 class OutboundBatchResult(BaseModel):
@@ -107,6 +118,8 @@ class BatchListItem(BaseModel):
 class BatchCallItem(BaseModel):
     id: int
     phone_number: str
+    customer_name: str
+    vehicle: str
     call_id: str | None
     status: str
     error: str | None

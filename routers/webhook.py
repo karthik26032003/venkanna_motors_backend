@@ -186,8 +186,9 @@ async def ultravox_webhook(request: Request) -> Response:
                 # Pop and start the next queued call
                 agent_id    = batch_row["agent_id"]
                 from_number = batch_row["from_number"]
-                next_number = await db.pop_next_queued(batch_id)
-                if next_number:
+                next_contact = await db.pop_next_queued(batch_id)
+                if next_contact:
+                    next_number = next_contact["phone_number"]
                     try:
                         next_call = await create_outbound_call(
                             agent_id=agent_id,
